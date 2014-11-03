@@ -2,6 +2,7 @@ import com.typesafe.sbt.SbtScalariform._
 import sbt._
 import sbt.Keys._
 import scalariform.formatter.preferences._
+import spray.revolver.RevolverPlugin._
 
 object Build extends AutoPlugin {
 
@@ -13,10 +14,11 @@ object Build extends AutoPlugin {
 
   override def projectSettings =
     scalariformSettings ++
+    Revolver.settings ++
     List(
       // Core settings
       organization := "de.heikoseeberger",
-      version := "0.1.0",
+      version := "1.1.2",
       scalaVersion := Version.scala,
       crossScalaVersions := List(scalaVersion.value),
       scalacOptions ++= List(

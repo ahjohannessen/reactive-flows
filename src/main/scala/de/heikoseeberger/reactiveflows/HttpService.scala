@@ -16,14 +16,18 @@
 
 package de.heikoseeberger.reactiveflows
 
-import akka.actor.{ Actor, ActorLogging, Props, Status }
+import akka.actor.{ Actor, ActorLogging, ActorRef, Props, Status }
 import akka.http.Http
 import akka.http.server.{ Route, ScalaRoutingDSL }
 import akka.io.IO
 import akka.pattern.{ ask, pipe }
 import akka.stream.FlowMaterializer
+import akka.stream.actor.ActorPublisher
+import akka.stream.scaladsl.Source
 import akka.util.Timeout
+import de.heikoseeberger.reactiveflows.util.Sse
 import scala.concurrent.duration.DurationInt
+import spray.json.{ PrettyPrinter, jsonWriter }
 
 object HttpService {
 
@@ -31,6 +35,13 @@ object HttpService {
 
   def props(interface: String, port: Int, bindTimeout: Timeout): Props =
     Props(new HttpService(interface, port, bindTimeout))
+
+  def flowEventToSseMessage(event: Flow.Event): Sse.Message =
+    event match {
+      case messageAdded: Flow.MessageAdded =>
+        val data = PrettyPrinter(jsonWriter[Flow.MessageAdded].write(messageAdded))
+        Sse.Message(data, Some("added"))
+    }
 }
 
 class HttpService(interface: String, port: Int, bindTimeout: Timeout)
@@ -38,8 +49,8 @@ class HttpService(interface: String, port: Int, bindTimeout: Timeout)
     with ActorLogging
     with ScalaRoutingDSL {
 
-  import HttpService._
   import context.dispatcher
+  import de.heikoseeberger.reactiveflows.HttpService._
 
   private implicit val materializer = FlowMaterializer()
 
@@ -63,7 +74,7 @@ class HttpService(interface: String, port: Int, bindTimeout: Timeout)
   }
 
   private def route: Route =
-    assets ~ shutdown
+    assets ~ shutdown ~ messages
 
   private def assets: Route =
     // format: OFF
@@ -82,4 +93,17 @@ class HttpService(interface: String, port: Int, bindTimeout: Timeout)
         }
       }
     }
+
+  private def messages: Route =
+    path("messages") {
+      get {
+        complete {
+          val source = Source(ActorPublisher[Flow.Event](createFlowEventPublisher()))
+          Sse.response(source, flowEventToSseMessage)
+        }
+      }
+    }
+
+  protected def createFlowEventPublisher(): ActorRef =
+    context.actorOf(FlowEventPublisher.props)
 }

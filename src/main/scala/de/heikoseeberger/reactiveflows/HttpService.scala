@@ -1,0 +1,85 @@
+/*
+ * Copyright 2014 Heiko Seeberger
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package de.heikoseeberger.reactiveflows
+
+import akka.actor.{ Actor, ActorLogging, Props, Status }
+import akka.http.Http
+import akka.http.server.{ Route, ScalaRoutingDSL }
+import akka.io.IO
+import akka.pattern.{ ask, pipe }
+import akka.stream.FlowMaterializer
+import akka.util.Timeout
+import scala.concurrent.duration.DurationInt
+
+object HttpService {
+
+  private case object Shutdown
+
+  def props(interface: String, port: Int, bindTimeout: Timeout): Props =
+    Props(new HttpService(interface, port, bindTimeout))
+}
+
+class HttpService(interface: String, port: Int, bindTimeout: Timeout)
+    extends Actor
+    with ActorLogging
+    with ScalaRoutingDSL {
+
+  import HttpService._
+  import context.dispatcher
+
+  private implicit val materializer = FlowMaterializer()
+
+  IO(Http)(context.system)
+    .ask(Http.Bind(interface, port))(bindTimeout)
+    .mapTo[Http.ServerBinding]
+    .pipeTo(self)
+
+  override def receive: Receive = {
+    case serverBinding: Http.ServerBinding =>
+      log.info(s"Listening on $interface:$port")
+      log.info(s"To shutdown, send GET request to http://$interface:$port/shutdown")
+      handleConnections(serverBinding).withRoute(route)
+
+    case Status.Failure(cause) =>
+      log.error(cause, s"Could not bind to $interface:$port!")
+      throw cause
+
+    case Shutdown =>
+      context.system.shutdown()
+  }
+
+  private def route: Route =
+    assets ~ shutdown
+
+  private def assets: Route =
+    // format: OFF
+    path("") {
+      getFromResource("web/index.html")
+    } ~
+    getFromResourceDirectory("web") // format: ON
+
+  private def shutdown: Route =
+    path("shutdown") {
+      get {
+        complete {
+          context.system.scheduler.scheduleOnce(500 millis, self, Shutdown)
+          log.info("Shutting down now ...")
+          "Shutting down now ..."
+        }
+      }
+    }
+}

@@ -27,6 +27,7 @@ import akka.stream.actor.ActorPublisher
 import akka.stream.scaladsl.Source
 import akka.util.Timeout
 import de.heikoseeberger.reactiveflows.util.{ MarshallingDirectives, SprayJsonSupport, Sse }
+import scala.concurrent.Future
 import scala.concurrent.duration.DurationInt
 import spray.json.{ DefaultJsonProtocol, PrettyPrinter, jsonWriter }
 
@@ -119,6 +120,38 @@ class HttpService(interface: String, port: Int, bindTimeout: Timeout)(implicit a
   private def flows: Route =
     // format: OFF
     pathPrefix("flows") {
+      path(Segment / "messages") { flowName =>
+        get {
+          complete {
+            FlowRepository(context.system)
+              .find(flowName)
+              .flatMap { flowData =>
+                if (flowData.isEmpty)
+                  Future.successful(StatusCodes.NotFound -> Nil)
+                else
+                  Flows(context.system)
+                    .getMessages(flowName)
+                    .map(messages => StatusCodes.OK -> messages)
+              }
+          }
+        } ~
+        post {
+          entity(as[MessageRequest]) { eventualMessageRequest =>
+            complete {
+              FlowRepository(context.system)
+                .find(flowName)
+                .flatMap { flowData =>
+                  if (flowData.isEmpty)
+                    Future.successful(StatusCodes.NotFound)
+                  else
+                    Flows(context.system)
+                      .addMessage(flowName, eventualMessageRequest.map(_.text))
+                      .map(_ => StatusCodes.Created)
+                }
+            }
+          }
+        }
+      } ~
       path(Segment) { flowName =>
         delete {
           complete {

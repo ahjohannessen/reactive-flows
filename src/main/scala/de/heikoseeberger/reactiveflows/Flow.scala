@@ -16,12 +16,71 @@
 
 package de.heikoseeberger.reactiveflows
 
+import akka.actor.{ ActorLogging, Props }
+import akka.contrib.pattern.{ DistributedPubSubExtension, DistributedPubSubMediator }
+import akka.persistence.PersistentActor
+import java.time.LocalDateTime
 import spray.json.DefaultJsonProtocol
 
 object Flow {
 
   sealed trait Event
 
+  case object GetMessages
+
+  case class AddMessage(text: String)
   case class MessageAdded(flowName: String, message: Message) extends Event
   object MessageAdded extends DefaultJsonProtocol { implicit val format = jsonFormat2(apply) }
+
+  val eventKey: String = "flow-events"
+
+  def props: Props =
+    Props(new Flow)
+}
+
+class Flow
+    extends PersistentActor
+    with ActorLogging {
+
+  import Flow._
+
+  private val name = self.path.name
+
+  private val mediator = DistributedPubSubExtension(context.system).mediator
+
+  private var messages = List.empty[Message]
+
+  log.debug("Flow [{}] created", name)
+
+  override def persistenceId: String =
+    s"flow-$name"
+
+  // Command handling
+
+  override def receiveCommand: Receive = {
+    case GetMessages      => getMessages()
+    case AddMessage(text) => addMessage(text)
+  }
+
+  private def getMessages(): Unit =
+    sender() ! messages
+
+  private def addMessage(text: String): Unit =
+    persist(MessageAdded(name, Message(text, LocalDateTime.now()))) { messageAdded =>
+      onMessageAdded(messageAdded)
+      mediator ! DistributedPubSubMediator.Publish(eventKey, messageAdded)
+      sender() ! messageAdded
+    }
+
+  // Event handling
+
+  override def receiveRecover: Receive = {
+    case messageAdded: MessageAdded => onMessageAdded(messageAdded)
+  }
+
+  private def onMessageAdded(messageAdded: MessageAdded): Unit = {
+    val MessageAdded(flowName, message) = messageAdded
+    messages +:= message
+    log.info("Added message [{}] to flow [{}]", message, flowName)
+  }
 }
